@@ -32,6 +32,10 @@
 
 #include <switch.h>
 
+// PATCH by sanket panchal
+int seq = 1;
+int i = 0;
+int sub = 1;
 struct switch_ivr_menu_action;
 
 struct switch_ivr_menu {
@@ -452,6 +456,9 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_menu_execute(switch_core_session_t *s
 {
 	int reps = 0, errs = 0, timeouts = 0, match = 0, running = 1;
 	char *greeting_sound = NULL, *aptr = NULL;
+	// NC_PATCH
+	const char *seq_str = NULL;
+	const char *rep_str = NULL;
 	char arg[512];
 	switch_ivr_action_t todo = SWITCH_IVR_ACTION_DIE;
 	switch_ivr_menu_action_t *ap;
@@ -485,6 +492,17 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_menu_execute(switch_core_session_t *s
 
 	switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "Executing IVR menu %s\n", menu->name);
 	switch_channel_set_variable(channel, "ivr_menu_status", "success");
+
+	// NC_PATCH starts
+	rep_str = switch_channel_get_variable(channel,"report");
+	seq_str = switch_channel_get_variable(channel,"seq_str");
+	if (strcasecmp(rep_str,"true") == 0){
+		if (strcasecmp(seq_str,"false") == 0){
+			NetClient_aa_report(menu->name,channel,menu->name,"NULL",0);
+			switch_channel_set_variable(channel,"main-menu",menu->name);
+		}
+	}
+	// PATCH ends
 
 	ivr_send_event(session, MENU_EVENT_ENTER, menu);
 
@@ -577,8 +595,21 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_menu_execute(switch_core_session_t *s
 					} else {
 						todo = ap->ivr_action;
 						aptr = use_arg;
+						// NC_PATCH starts here
 						switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
-										  "IVR action on menu '%s' matched '%s' param '%s'\n", menu->name, menu->buf, aptr);
+							"IVR action on menu '%s' matched '%s' param '%s' and %d\n", menu->name, menu->buf, aptr,reps);
+						if (strcasecmp(rep_str,"true") == 0){
+							if(strncasecmp(aptr,"directory",9) == 0 || strncasecmp(aptr,"NetClient ivr_voicemail_login",29) == 0) {
+								switch_channel_set_variable(channel,"menu_name",menu->name);
+								switch_channel_set_variable(channel,"dtmf_aa",menu->buf);
+							} else if(strncasecmp(aptr,"NetClient ivr_dial_direct",25) == 0){
+								switch_channel_set_variable(channel,"menu_name_dd",menu->name);
+								switch_channel_set_variable(channel,"dtmf_aa",menu->buf);
+							} else {
+								NetClient_aa_report(menu->name,channel,aptr,menu->buf,todo);
+							}
+						}
+						// PATCH ends
 					}
 
 					switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "switch_ivr_menu_execute todo=[%d]\n", todo);
@@ -657,6 +688,11 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_menu_execute(switch_core_session_t *s
 			if (*menu->buf) {
 				switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "IVR menu '%s' caught invalid input '%s'\n", menu->name,
 								  menu->buf);
+				// NC_PATCH starts
+				if (strcasecmp(rep_str,"true") == 0){
+					NetClient_aa_report(menu->name,channel,"",menu->buf,6);
+				}
+				// PATCH ends
 				if (menu->invalid_sound) {
 					play_and_collect(session, menu, menu->invalid_sound, 0);
 				}
@@ -983,6 +1019,184 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_menu_stack_xml_build(switch_ivr_menu_
 
 	return status;
 }
+
+// NC_PATCH starts here for AA report
+SWITCH_DECLARE(switch_status_t) NetClient_aa_report(char *menu_name, switch_channel_t *channel, char *arg, char *dtmf, int todo)
+{
+	char *tm_id = NULL;
+	char *uuid = NULL;
+	char *call_id = NULL;
+	char *arg_mod = NULL;
+	char *arg_mid = NULL;
+	char *int_arg = NULL;
+	char *arg_string = NULL;
+	char *sub_menu = NULL;
+	char *sub_menu_s = NULL;
+	const char *sub_menu_f = NULL;
+	char *ext = NULL;
+	char *cmd = NULL;
+	const char *seq_str = NULL;
+	const char *main_menu = NULL;
+	//int seq;
+	switch_stream_handle_t stream = { 0 };
+
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "going for report\n");
+
+	arg_mid = strdup(arg);
+
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "going for report\n");
+	tm_id = (char*)switch_str_nil(switch_channel_get_variable(channel,"tm_id"));
+
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "going for report\n");
+	uuid = (char*)switch_str_nil(switch_channel_get_variable(channel,"uuid"));
+
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "going for report\n");
+	call_id = (char*)switch_str_nil(switch_channel_get_variable(channel,"caller_id_number"));
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "going for report\n");
+
+	seq_str = switch_channel_get_variable(channel,"seq_str");
+	if (strcasecmp(seq_str,"false") == 0){
+		seq = 1;
+		switch_channel_set_variable(channel,"seq_str","true");
+	} else {
+		seq++;
+	}
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,"%s %s %s",tm_id,uuid,call_id);
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,"%s %s %s %d [%d]",menu_name,arg,dtmf,todo,seq);
+	switch (todo) {
+		case 0:
+			if((int_arg = strchr(arg_mid,'_'))){
+				*int_arg++ = '\0';
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,"%s",int_arg);
+			}
+			arg_mod = switch_mprintf("Entered in IVR : %s",int_arg);
+			break;
+		case 1:
+			if((int_arg = strchr(arg_mid,'_'))){
+				*int_arg++ = '\0';
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,"%s",int_arg);
+			}
+			i++;
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,"%d\n",sub);
+			sub++;
+			sub_menu = switch_mprintf("sub_menu_%d",i);
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,"%s",sub_menu);
+			switch_channel_set_variable(channel,sub_menu,int_arg);
+			//sub_menu_f = switch_channel_get_variable(channel,"sub_menu_1");
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,"%s",sub_menu_f);
+			if(strcmp(menu_name,arg)){
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,"in if\n");
+			arg_mod = switch_mprintf("Entered in sub menu : %s",int_arg);}
+			else{
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,"in else\n");
+			arg_mod = switch_mprintf("Repeat sub menu : %s",int_arg);}
+			break;
+		case 2:
+			if((int_arg = strchr(arg_mid,' '))){
+				*int_arg++ = '\0';
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,"%s",int_arg);
+			} else if (strncasecmp(arg_mid,"hangup",6) == 0){
+				arg_string = switch_mprintf("Disconnected");
+				arg_mod = switch_mprintf("%s%s",arg_string,ext);
+				break;
+			}
+
+
+			if (int_arg && strncasecmp(int_arg,"ivr_dial",8) == 0){
+				arg_string = switch_mprintf("Transferred to Extension : ");
+			}
+			if (int_arg && strncasecmp(int_arg,"ivr_inbound_dialplan",20) == 0){
+				arg_string = switch_mprintf("Transferred to Inbound dialplan : ");
+			}
+			if (int_arg && strncasecmp(int_arg,"ivr_dial_direct",15) == 0){
+				arg_string = switch_mprintf("Direct dialed to : ");
+			}
+			if (int_arg && strncasecmp(int_arg,"ivr_personal",12) == 0){
+				arg_string = switch_mprintf("Transferred to personal voicemail : ");
+			}
+			if (int_arg && strncasecmp(int_arg,"ivr_voicemail_box",17) == 0){
+				arg_string = switch_mprintf("Transferred to voicemail box : ");
+			}
+			if (int_arg && strncasecmp(int_arg,"ivr_voicemail_login",19) == 0){
+				arg_string = switch_mprintf("Logged into voicemail box of : ");
+			}
+			if (arg_mid && strncasecmp(arg_mid,"hangup",6) == 0){
+				arg_string = switch_mprintf("Disconnected");
+			}
+			if (int_arg) {
+				if((ext = strchr(int_arg,' '))){
+					*ext++ = '\0';
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,"%s",ext);
+				}
+			}
+			arg_mod = switch_mprintf("%s%s",arg_string,ext);
+			break;
+		case 3:
+			if((int_arg = strrchr(arg_mid,'/'))){
+				*int_arg++ = '\0';
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,"%s",int_arg);
+			}
+
+			arg_mod = switch_mprintf("Playing File : %s",int_arg);
+			break;
+		case 4:
+			if ((i==0) || (i==1)){
+				sub_menu_f = switch_channel_get_variable(channel,"main-menu");
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,"prev_%s",sub_menu_f);
+				if((int_arg = strchr(sub_menu_f,'_'))){
+					*int_arg++ = '\0';
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,"prev_%s",int_arg);
+				}
+				arg_mod = switch_mprintf("Back to previous menu : %s",int_arg);
+				i = 0;
+			} else {
+				i--;
+				sub_menu_s = switch_mprintf("sub_menu_%d",i);
+				sub_menu_f = switch_channel_get_variable(channel,sub_menu_s);
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,"%s",sub_menu_f);
+				arg_mod = switch_mprintf("Back to previous menu : %s",sub_menu_f);
+			}
+			break;
+		case 5:
+			main_menu = switch_channel_get_variable(channel,"main-menu");
+			if((int_arg = strchr(main_menu,'_'))){
+				*int_arg++ = '\0';
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,"%s",int_arg);
+			}
+			i = 0;
+			arg_mod = switch_mprintf("Back to top menu : %s",int_arg);
+			break;
+		case 6:
+			arg_mod = switch_mprintf("Invalid Input");
+			break;
+		case 7:
+			arg_mod = switch_mprintf("Dial by name : %s",arg);
+			break;
+		case 8:
+			arg_mod = switch_mprintf("Dial by name (Group wise) : %s",arg);
+			break;
+		default:
+			arg_mod = switch_mprintf("hangup");
+			break;
+	}
+
+	switch_safe_free(arg_mid);
+	SWITCH_STANDARD_STREAM(stream);
+	if (strcasecmp(arg,"") != 0){
+		//cmd = switch_mprintf("api,aa_report,%s|%s|%s|%s|%s|%d|%s|%s",menu_name,uuid,call_id,arg_mod,dtmf,seq,arg,tm_id);
+		cmd = switch_mprintf("NetClient_sql_ops api,aa_report,%s|%s|%s|%s|%s|%d|%s|%s",menu_name,uuid,call_id,arg_mod,dtmf,seq,arg,tm_id);
+	} else {
+		//cmd = switch_mprintf("api,aa_report,%s|%s|%s|%s|%s|%d|NULL|%s",menu_name,uuid,call_id,arg_mod,dtmf,seq,tm_id);
+		cmd = switch_mprintf("NetClient_sql_ops api,aa_report,%s|%s|%s|%s|%s|%d|NULL|%s",menu_name,uuid,call_id,arg_mod,dtmf,seq,tm_id);
+	}
+	//switch_api_execute("NetClient_sql_ops", cmd, NULL, &stream);
+	switch_api_execute("bgapi", cmd, NULL, &stream);
+
+	return SWITCH_STATUS_SUCCESS;
+
+}
+// PATCH ends here
+
 
 /* For Emacs:
  * Local Variables:
